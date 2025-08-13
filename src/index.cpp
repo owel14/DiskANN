@@ -1053,6 +1053,7 @@ void Index<T, TagT, LabelT>::search_for_point_and_prune(int location, uint32_t L
     assert(_graph_store->get_total_points() == _max_points + _num_frozen_pts);
 }
 
+
 template <typename T, typename TagT, typename LabelT>
 void Index<T, TagT, LabelT>::occlude_list(const uint32_t location, std::vector<Neighbor> &pool, const float alpha,
                                           const uint32_t degree, const uint32_t maxc, std::vector<uint32_t> &result,
@@ -1068,30 +1069,36 @@ void Index<T, TagT, LabelT>::occlude_list(const uint32_t location, std::vector<N
     if (pool.size() > maxc)
         pool.resize(maxc);
     std::vector<float> &occlude_factor = scratch->occlude_factor();
-    // occlude_list can be called with the same scratch more than once by
-    // search_for_point_and_add_link through inter_insert.
     occlude_factor.clear();
-    // Initialize occlude_factor to pool.size() many 0.0f values for correctness
     occlude_factor.insert(occlude_factor.end(), pool.size(), 0.0f);
 
     float cur_alpha = 1;
     while (cur_alpha <= alpha && result.size() < degree)
     {
-        // used for MIPS, where we store a value of eps in cur_alpha to
-        // denote pruned out entries which we can skip in later rounds.
         float eps = cur_alpha + 0.01f;
 
         for (auto iter = pool.begin(); result.size() < degree && iter != pool.end(); ++iter)
         {
             if (occlude_factor[iter - pool.begin()] > cur_alpha)
             {
-                continue;
+                continue; // Pruned - skip this candidate
             }
-            // Set the entry to float::max so that is not considered again
-            occlude_factor[iter - pool.begin()] = std::numeric_limits<float>::max();
-            // Add the entry to the result if its not been deleted, and doesn't
-            // add a self loop
+            
+            // NEW: Check geometric rule before adding to result
+            bool geometric_valid = true;
             if (delete_set_ptr == nullptr || delete_set_ptr->find(iter->id) == delete_set_ptr->end())
+            {
+                if (iter->id != location)
+                {
+                    // Check if edge (location, iter->id) should be excluded due to geometric rule
+                    geometric_valid = !should_exclude_edge_geometric(location, iter->id, pool);
+                }
+            }
+            
+            occlude_factor[iter - pool.begin()] = std::numeric_limits<float>::max();
+            
+            // Only add to result if geometric rule allows it
+            if (geometric_valid && (delete_set_ptr == nullptr || delete_set_ptr->find(iter->id) == delete_set_ptr->end()))
             {
                 if (iter->id != location)
                 {
@@ -1099,13 +1106,14 @@ void Index<T, TagT, LabelT>::occlude_list(const uint32_t location, std::vector<N
                 }
             }
 
-            // Update occlude factor for points from iter+1 to pool.end()
+            // Update occlude factor for remaining points (original logic)
             for (auto iter2 = iter + 1; iter2 != pool.end(); iter2++)
             {
                 auto t = iter2 - pool.begin();
                 if (occlude_factor[t] > alpha)
                     continue;
 
+                // Original filtered index checks
                 bool prune_allowed = true;
                 if (_filtered_index)
                 {
@@ -1127,6 +1135,7 @@ void Index<T, TagT, LabelT>::occlude_list(const uint32_t location, std::vector<N
                 if (!prune_allowed)
                     continue;
 
+                // Original distance-based occlusion logic
                 float djk = _data_store->get_distance(iter2->id, iter->id);
                 if (_dist_metric == diskann::Metric::L2 || _dist_metric == diskann::Metric::COSINE)
                 {
@@ -1135,7 +1144,6 @@ void Index<T, TagT, LabelT>::occlude_list(const uint32_t location, std::vector<N
                 }
                 else if (_dist_metric == diskann::Metric::INNER_PRODUCT)
                 {
-                    // Improvization for flipping max and min dist for MIPS
                     float x = -iter2->distance;
                     float y = -djk;
                     if (y > cur_alpha * x)
@@ -1149,6 +1157,69 @@ void Index<T, TagT, LabelT>::occlude_list(const uint32_t location, std::vector<N
     }
 }
 
+// NEW: Helper function to check geometric rule
+template <typename T, typename TagT, typename LabelT>
+bool Index<T, TagT, LabelT>::should_exclude_edge_geometric(const uint32_t u, const uint32_t v, 
+                                                          const std::vector<Neighbor> &pool)
+{
+    const float angle_threshold = 67.0f; // degrees
+    
+    float dist_uv = _data_store->get_distance(u, v);
+    
+    
+    // Check against all other nodes in the pool (potential interfering nodes w)
+    for (const auto &neighbor : pool)
+    {
+        uint32_t w = neighbor.id;
+        if (w == u || w == v) continue;
+        
+        float dist_uw = _data_store->get_distance(u, w);
+        float dist_vw = _data_store->get_distance(v, w);
+        
+        // Check distance conditions: dist(u,w) < dist(u,v) AND dist(v,w) < dist(u,v)
+        if (dist_uw < dist_uv && dist_vw < dist_uv)
+        {
+            // Check angle condition: ∠uwv > 67 degrees
+            float angle_uwv = calculate_angle(u, w, v);
+            if (angle_uwv > angle_threshold)
+            {
+                return true; // Edge should be excluded
+            }
+        }
+    }
+    
+    return false; // Edge is valid
+}
+
+// NEW: Helper function to calculate angle ∠uwv (angle at point w)
+template <typename T, typename TagT, typename LabelT>
+float Index<T, TagT, LabelT>::calculate_angle(const uint32_t u, const uint32_t w, const uint32_t v)
+{
+    // For high-dimensional spaces, we need to use the law of cosines
+    // cos(∠uwv) = (|wu|² + |wv|² - |uv|²) / (2 * |wu| * |wv|)
+    
+    float dist_wu = _data_store->get_distance(w, u);
+    float dist_wv = _data_store->get_distance(w, v);
+    float dist_uv = _data_store->get_distance(u, v);
+    
+    if (dist_wu == 0.0f || dist_wv == 0.0f) {
+        return 0.0f; // Degenerate case
+    }
+    
+    // Law of cosines to find angle at w
+    float cos_angle = (dist_wu * dist_wu + dist_wv * dist_wv - dist_uv * dist_uv) / 
+                      (2.0f * dist_wu * dist_wv);
+    
+    // Clamp to valid range for acos
+    cos_angle = std::max(-1.0f, std::min(1.0f, cos_angle));
+    
+    // Convert from radians to degrees
+    float angle_rad = std::acos(cos_angle);
+    float angle_deg = angle_rad * 180.0f / M_PI;
+    
+    return angle_deg;
+}
+// convenience overload
 template <typename T, typename TagT, typename LabelT>
 void Index<T, TagT, LabelT>::prune_neighbors(const uint32_t location, std::vector<Neighbor> &pool,
                                              std::vector<uint32_t> &pruned_list, InMemQueryScratch<T> *scratch)
@@ -1197,6 +1268,10 @@ void Index<T, TagT, LabelT>::prune_neighbors(const uint32_t location, std::vecto
     }
 }
 
+//This function performs reverse linking. 
+// For each neighbor in pruned_list of the current node, inter_insert attempts to add the current node as a neighbor 
+// to that neighbor's adjacency list. This ensures that edges are bidirectional and the graph remains well-connected.
+//  It also involves pruning the neighbors of the target nodes to maintain their degree limits.
 template <typename T, typename TagT, typename LabelT>
 void Index<T, TagT, LabelT>::inter_insert(uint32_t n, std::vector<uint32_t> &pruned_list, const uint32_t range,
                                           InMemQueryScratch<T> *scratch)
@@ -1268,6 +1343,10 @@ void Index<T, TagT, LabelT>::inter_insert(uint32_t n, std::vector<uint32_t> &pru
     inter_insert(n, pruned_list, _indexingRange, scratch);
 }
 
+// This is the primary algorithm for building the Vamana graph structure. This method iterates through all the data points and constructs their adjacency lists (their nearest neighbors in the graph).
+// High-Level Process: For each data point, it performs a local search (guided by index_L) to find its approximate nearest neighbors among the already-indexed points. It then creates connections (edges) between the current point and these neighbors, while ensuring that each node's degree doesn't exceed index_R.
+// Optimization: The link() function incorporates various optimizations to ensure a high-quality graph that supports efficient searches (e.g., maintaining connectivity, balancing degrees, using maxc and _indexingAlpha to prune candidates and prevent "hubs").
+// This step is usually the most computationally intensive part of the index build.
 template <typename T, typename TagT, typename LabelT> void Index<T, TagT, LabelT>::link()
 {
     uint32_t num_threads = _indexingThreads;
@@ -1337,6 +1416,8 @@ template <typename T, typename TagT, typename LabelT> void Index<T, TagT, LabelT
     {
         diskann::cout << "Starting final cleanup.." << std::flush;
     }
+
+//After the initial linking phase, a second parallel loop ensures that all nodes strictly adhere to the maximum degree constraint.
 #pragma omp parallel for schedule(dynamic, 2048)
     for (int64_t node_ctr = 0; node_ctr < (int64_t)(visit_order.size()); node_ctr++)
     {
@@ -1575,6 +1656,7 @@ void Index<T, TagT, LabelT>::_build(const DataType &data, const size_t num_point
         throw ANNException("Error" + std::string(e.what()), -1);
     }
 }
+// This build method is designed for scenarios where the data is already available in memory.
 template <typename T, typename TagT, typename LabelT>
 void Index<T, TagT, LabelT>::build(const T *data, const size_t num_points_to_load, const std::vector<TagT> &tags)
 {
@@ -1600,6 +1682,7 @@ void Index<T, TagT, LabelT>::build(const T *data, const size_t num_points_to_loa
     build_with_data_populated(tags);
 }
 
+//This is a more common build method used when data resides in a binary file on disk.
 template <typename T, typename TagT, typename LabelT>
 void Index<T, TagT, LabelT>::build(const char *filename, const size_t num_points_to_load, const std::vector<TagT> &tags)
 {
@@ -1685,7 +1768,7 @@ void Index<T, TagT, LabelT>::build(const char *filename, const size_t num_points
     }
     build_with_data_populated(tags);
 }
-
+// This method is a convenience wrapper specifically for building an index from a data file and a separate tag file.
 template <typename T, typename TagT, typename LabelT>
 void Index<T, TagT, LabelT>::build(const char *filename, const size_t num_points_to_load, const char *tag_filename)
 {
@@ -2230,7 +2313,9 @@ template <typename T, typename TagT, typename LabelT> size_t Index<T, TagT, Labe
     std::shared_lock<std::shared_timed_mutex> tl(_tag_lock);
     return _max_points;
 }
-
+// This function is responsible for determining and setting up the entry point(s) for the Vamana graph, often called medoids.
+// For a static index, there's usually a single medoid. For partitioned indices or dynamic indices, there might be multiple entry points or specially designated "frozen" nodes.
+// The quality of the medoid selection can impact the initial search performance.
 template <typename T, typename TagT, typename LabelT> void Index<T, TagT, LabelT>::generate_frozen_point()
 {
     if (_num_frozen_pts == 0)

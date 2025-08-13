@@ -277,6 +277,11 @@ template <typename T, typename TagT = uint32_t, typename LabelT = uint32_t> clas
                       const uint32_t maxc, std::vector<uint32_t> &result, InMemQueryScratch<T> *scratch,
                       const tsl::robin_set<uint32_t> *const delete_set_ptr = nullptr);
 
+    bool should_exclude_edge_geometric(const uint32_t u, const uint32_t v, 
+                                      const std::vector<Neighbor> &pool);
+                                      
+    float calculate_angle(const uint32_t u, const uint32_t w, const uint32_t v);
+
     // add reverse links from all the visited nodes to node n.
     void inter_insert(uint32_t n, std::vector<uint32_t> &pruned_list, const uint32_t range,
                       InMemQueryScratch<T> *scratch);
