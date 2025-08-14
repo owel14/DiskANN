@@ -7,9 +7,6 @@ set(CMAKE_COMPILE_WARNING_AS_ERROR ON)
 add_executable(build_memory_index build_memory_index.cpp)
 target_link_libraries(build_memory_index ${PROJECT_NAME} ${DISKANN_TOOLS_TCMALLOC_LINK_OPTIONS} Boost::program_options)
 
-add_executable(refine_disk_index refine_disk_index.cpp)
-target_link_libraries(refine_disk_index ${PROJECT_NAME} ${DISKANN_TOOLS_TCMALLOC_LINK_OPTIONS} ${DISKANN_ASYNC_LIB} Boost::program_options)
-
 add_executable(build_stitched_index build_stitched_index.cpp)
 target_link_libraries(build_stitched_index ${PROJECT_NAME} ${DISKANN_TOOLS_TCMALLOC_LINK_OPTIONS} Boost::program_options)
 
@@ -21,9 +18,6 @@ target_link_libraries(build_disk_index ${PROJECT_NAME} ${DISKANN_TOOLS_TCMALLOC_
 
 add_executable(search_disk_index search_disk_index.cpp)
 target_link_libraries(search_disk_index ${PROJECT_NAME} ${DISKANN_ASYNC_LIB} ${DISKANN_TOOLS_TCMALLOC_LINK_OPTIONS} Boost::program_options)
-
-add_executable(search_disk_index_test search_disk_index_test.cpp)
-target_link_libraries(search_disk_index_test ${PROJECT_NAME} ${DISKANN_ASYNC_LIB} ${DISKANN_TOOLS_TCMALLOC_LINK_OPTIONS} Boost::program_options)
 
 add_executable(range_search_disk_index range_search_disk_index.cpp)
 target_link_libraries(range_search_disk_index ${PROJECT_NAME} ${DISKANN_ASYNC_LIB} ${DISKANN_TOOLS_TCMALLOC_LINK_OPTIONS} Boost::program_options)
@@ -40,8 +34,6 @@ if (NOT MSVC)
             search_memory_index
             build_disk_index
             search_disk_index
-            search_disk_index_test
-            refine_disk_index
             range_search_disk_index
             test_streaming_scenario
             test_insert_deletes_consolidate
